@@ -20,7 +20,7 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import os from "node:os";
@@ -803,28 +803,37 @@ for (const ext of EXTENSIONS) {
     // Without the fix (if session were assigned after), a throw from bindExtensions
     // would leave session undefined, making the finally block unable to dispose.
     let session = created.session;
+    let pid;
     try {
-      await session.bindExtensions({ mode: "json" });
-    } catch {
-      // Pi may or may not propagate session_start errors; either way we clean up.
+      try {
+        await session.bindExtensions({ mode: "json" });
+      } catch {
+        // Pi may or may not propagate session_start errors; either way we clean up.
+      }
+      // MCP servers are spawned asynchronously after session_start. Wait for the PID
+      // file before disposing so cleanup is exercised against a real running server.
+      // The fixture writes the PID asynchronously, so the file may exist while empty;
+      // poll until it holds a positive PID.
+      const readPidSync = () => {
+        try {
+          return Number(readFileSync(pidFile, "utf8").trim());
+        } catch {
+          return 0;
+        }
+      };
+      const pidWritten = await waitUntil(() => readPidSync() > 0);
+      assert.ok(pidWritten, `${ext.label}: fixture MCP server must write a valid PID`);
+      pid = readPidSync();
+      assert.ok(pid && pid > 0, `${ext.label}: fixture server must write a valid PID`);
     } finally {
       await disposeSubagentSession(session);
       session = undefined;
     }
 
-    // Give the server a moment to write its PID file if it was spawned.
-    const pidWritten = await waitUntil(() => existsSync(pidFile), { timeoutMs: 3000 });
-    if (pidWritten) {
-      const pid = await readPidFile(pidFile);
-      if (pid && pid > 0) {
-        const dead = await waitUntil(() => !isAlive(pid), { timeoutMs: 4000 });
-        assert.ok(
-          dead,
-          `${ext.label}: server (PID ${pid}) must exit after disposeSubagentSession — validates cleanup works when session is assigned before bindExtensions`,
-        );
-      }
-    }
-    // If pidWritten is false: the server was never spawned (Pi rejected the session
-    // before MCP connect), which is also a clean outcome — no leak to verify.
+    const dead = await waitUntil(() => !isAlive(pid), { timeoutMs: 4000 });
+    assert.ok(
+      dead,
+      `${ext.label}: server (PID ${pid}) must exit after disposeSubagentSession — validates cleanup works when session is assigned before bindExtensions`,
+    );
   });
 }
