@@ -220,6 +220,14 @@ function getEligibility(ctx: ExtensionContext): Eligibility {
 			};
 		}
 
+		if (ctx.modelRegistry.isUsingOAuth(model)) {
+			return {
+				eligible: false,
+				modelKey: key,
+				reason: "ChatGPT OAuth rejects service_tier=fast on this route; use standard speed or a supported direct API-key model",
+			};
+		}
+
 		return {
 			eligible: true,
 			modelKey: key,

@@ -202,7 +202,7 @@ test('fast supports every legacy allowlisted model and preserves provider-specif
   assert.deepEqual(apiKeyOpenAI.statuses.at(-1), { key: 'fast', value: undefined });
 });
 
-test('fast preserves direct OpenAI API-key and OAuth payload behavior without live certification', async (t) => {
+test('fast preserves direct OpenAI API-key behavior and blocks unsupported ChatGPT OAuth', async (t) => {
   const { agentDir, projectDir } = setupTempDirs(t);
   setAgentDir(t, agentDir);
   writeConfig(path.join(agentDir, 'extensions', 'fast.json'), { enabled: true });
@@ -222,13 +222,23 @@ test('fast preserves direct OpenAI API-key and OAuth payload behavior without li
           oauth,
         });
         await sessionStart({}, context.ctx);
+        if (oauth) {
+          const payload = { model: id, input: 'hello' };
+          await getCommand(harness).handler('', context.ctx);
+          await getCommand(harness).handler('', context.ctx);
+          assert.match(context.notifications.at(-1).message, /inactive.*ChatGPT OAuth rejects/);
+          assert.equal(await beforeRequest({ payload }, context.ctx), undefined);
+          assert.deepEqual(payload, { model: id, input: 'hello' });
+          assert.deepEqual(context.statuses.at(-1), { key: 'fast', value: undefined });
+          continue;
+        }
         assert.deepEqual(await beforeRequest({ payload: { model: id, input: 'hello' } }, context.ctx), {
           model: id,
           input: 'hello',
           service_tier: 'fast',
         });
         assert.deepEqual(context.statuses.at(-1), { key: 'fast', value: 'fast' });
-        assert.deepEqual(context.oauthCalls, [], 'direct OpenAI auth must not be routed through Codex auth checks');
+        assert.ok(context.oauthCalls.length > 0, 'direct OpenAI eligibility must check auth mode');
       }
     }
   }
@@ -236,7 +246,7 @@ test('fast preserves direct OpenAI API-key and OAuth payload behavior without li
   const directApiContext = createContext({
     cwd: projectDir,
     model: { provider: 'openai', api: 'openai-responses', id: 'gpt-6-astra' },
-    oauth: true,
+    oauth: false,
   });
   await sessionStart({}, directApiContext.ctx);
   const existingTierPayload = { model: 'gpt-6-astra', input: 'hello', service_tier: 'default' };
@@ -286,7 +296,7 @@ test('fast enables direct GPT-6.1 Sol only and keeps legacy Codex fail-closed', 
   assert.equal(await beforeRequest({ payload: disabledPayload }, direct.ctx), undefined);
   assert.deepEqual(disabledPayload, { model: 'gpt-6.1-sol', input: 'disabled' });
   assert.deepEqual(direct.statuses.at(-1), { key: 'fast', value: undefined });
-  assert.deepEqual(direct.oauthCalls, [], 'API-key direct OpenAI auth must not use Codex OAuth checks');
+  assert.ok(direct.oauthCalls.length > 0, 'direct OpenAI eligibility must check auth mode');
 
   await command.handler('', direct.ctx);
   assert.match(

@@ -39,17 +39,15 @@ Direct OpenAI API Fast mode requires all of the following:
 - Provider `openai`.
 - API `openai-responses` or `openai-completions`.
 - Model `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`, or `gpt-6-luna`.
-- API-key auth or Pi's `openai` ChatGPT OAuth (`Sign in with ChatGPT`).
+- API-key auth. Pi's `openai` ChatGPT OAuth (`Sign in with ChatGPT`) is excluded.
 - No existing `service_tier` field in the request payload.
 
-The direct OpenAI route stays on OpenAI's direct API contract for both API-key
-auth and Pi's `openai` ChatGPT OAuth. Acceptance of `service_tier: "fast"` by
-Pi's `openai` ChatGPT OAuth sign-in endpoint has not been live-verified and
-remains deferred to manual gate `pel-71t6`. This direct route is never forwarded
-to legacy `openai-codex` or its subscription-usage endpoint. The documented
-request shape is support evidence, not live certification; this change was
-validated only with mocked eligibility and request payloads, not live or paid
-provider calls.
+Pi's `openai` ChatGPT OAuth route has returned HTTP 400 with
+`Unsupported service_tier: fast` for GPT-6.1 Sol. The extension therefore leaves
+Fast mode inactive for direct OpenAI OAuth, even when toggled on, and leaves the
+request unchanged. API-key support does not imply subscription endpoint support.
+No fallback tier, provider switch, or automatic paid API-key request is attempted.
+Regression tests use mocked contexts and payloads, not live or paid provider calls.
 
 OpenAI Codex Fast mode requires all of the following:
 
