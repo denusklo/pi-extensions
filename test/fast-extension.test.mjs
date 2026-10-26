@@ -126,7 +126,6 @@ test("fast routes one enabled session across supported OpenAI and Anthropic mode
 
   const sessionStart = getHandler(harness, "session_start");
   const modelSelect = getHandler(harness, "model_select");
-  const beforeHeaders = getHandler(harness, "before_provider_headers");
   const beforeRequest = getHandler(harness, "before_provider_request");
   const command = getCommand(harness);
   const context = createContext({
@@ -152,18 +151,27 @@ test("fast routes one enabled session across supported OpenAI and Anthropic mode
   await modelSelect({ model: context.ctx.model }, context.ctx);
   assert.deepEqual(context.statuses.at(-1), { key: "fast", value: "fast" });
 
-  const headers = { "Anthropic-Beta": "existing-beta,oauth-2025-04-20" };
-  await beforeHeaders({ headers }, context.ctx);
-  assert.deepEqual(betaValues(headers), [
-    "existing-beta",
-    "oauth-2025-04-20",
-    "claude-code-20250219",
-    ANTHROPIC_FAST_BETA,
-  ]);
-  assert.equal(headers["Anthropic-Beta"], undefined);
+  assert.deepEqual(
+    await beforeRequest(
+      {
+        payload: {
+          model: "claude-opus-4-8",
+          messages: [],
+          betas: ["existing-beta", "oauth-2025-04-20"],
+        },
+      },
+      context.ctx,
+    ),
+    {
+      model: "claude-opus-4-8",
+      messages: [],
+      betas: ["existing-beta", "oauth-2025-04-20", ANTHROPIC_FAST_BETA],
+      speed: "fast",
+    },
+  );
   assert.deepEqual(
     await beforeRequest({ payload: { model: "claude-opus-4-8", messages: [] } }, context.ctx),
-    { model: "claude-opus-4-8", messages: [], speed: "fast" },
+    { model: "claude-opus-4-8", messages: [], betas: [ANTHROPIC_FAST_BETA], speed: "fast" },
   );
 
   context.ctx.model = { provider: "google", api: "google-generative-ai", id: "gemini-test" };
@@ -217,6 +225,7 @@ test("fast supports every legacy allowlisted model and preserves provider-specif
     assert.deepEqual(await beforeRequest({ payload: { model: id } }, context.ctx), {
       model: id,
       speed: "fast",
+      betas: [ANTHROPIC_FAST_BETA],
     });
   }
 
@@ -529,7 +538,6 @@ test("ultrafast payloads preserve explicit tiers, malformed inputs, and Anthropi
   extension(harness.pi);
   const sessionStart = getHandler(harness, "session_start");
   const modelSelect = getHandler(harness, "model_select");
-  const beforeHeaders = getHandler(harness, "before_provider_headers");
   const beforeRequest = getHandler(harness, "before_provider_request");
   const ultrafastCommand = getCommand(harness, "ultrafast");
   const context = createContext({ cwd: projectDir, model: ultrafastModel(), oauth: false });
@@ -569,9 +577,6 @@ test("ultrafast payloads preserve explicit tiers, malformed inputs, and Anthropi
     id: "claude-opus-4-8",
     compat: { forceAdaptiveThinking: true },
   };
-  const anthropicHeaders = { "Anthropic-Beta": "existing-beta" };
-  await beforeHeaders({ headers: anthropicHeaders }, context.ctx);
-  assert.deepEqual(anthropicHeaders, { "Anthropic-Beta": "existing-beta" });
   await modelSelect({ model: context.ctx.model }, context.ctx);
   assert.match(context.notifications.at(-1).message, /Ultrafast mode disabled/);
   assert.equal(
@@ -784,7 +789,6 @@ for (const id of ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"]) {
     extension(harness.pi);
     const sessionStart = getHandler(harness, "session_start");
     const beforeRequest = getHandler(harness, "before_provider_request");
-    const beforeHeaders = getHandler(harness, "before_provider_headers");
     const command = getCommand(harness);
     const model = { provider: "openai-codex", api: "openai-codex-responses", id };
     const context = createContext({ cwd: projectDir, model, oauth: true });
@@ -807,9 +811,6 @@ for (const id of ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"]) {
     });
     assert.deepEqual(payload, { model: id, input: "hello" });
     assert.deepEqual(context.statuses.at(-1), { key: "fast", value: "fast" });
-    const headers = { "x-test": "unchanged" };
-    await beforeHeaders({ headers }, context.ctx);
-    assert.deepEqual(headers, { "x-test": "unchanged" });
 
     for (const service_tier of ["default", "flex", "fast", "priority", null]) {
       const existing = { ...payload, service_tier };
@@ -910,14 +911,23 @@ test("fast uses trusted project config, ignores untrusted project config, and do
   assert.deepEqual(untrusted.statuses.at(-1), { key: "fast", value: undefined });
 });
 
-test("fast only adds Anthropic request headers while active and merges beta values case-insensitively", async (t) => {
+test("fast does not register a before_provider_headers hook", async (t) => {
+  const { agentDir } = setupTempDirs(t);
+  setAgentDir(t, agentDir);
+  const extension = await loadExtension("extensions/fast/index.ts");
+  const harness = createExtensionHarness();
+  extension(harness.pi);
+  assert.equal(harness.handlers.has("before_provider_headers"), false);
+});
+
+test("fast only adds the Anthropic beta to the payload while active and keeps existing betas", async (t) => {
   const { agentDir, projectDir } = setupTempDirs(t);
   setAgentDir(t, agentDir);
   const extension = await loadExtension("extensions/fast/index.ts");
   const harness = createExtensionHarness();
   extension(harness.pi);
   const sessionStart = getHandler(harness, "session_start");
-  const beforeHeaders = getHandler(harness, "before_provider_headers");
+  const beforeRequest = getHandler(harness, "before_provider_request");
   const command = getCommand(harness);
   const context = createContext({
     cwd: projectDir,
@@ -931,46 +941,49 @@ test("fast only adds Anthropic request headers while active and merges beta valu
   });
   await sessionStart({}, context.ctx);
 
-  const disabledHeaders = { "Anthropic-Beta": "existing-beta" };
-  await beforeHeaders({ headers: disabledHeaders }, context.ctx);
-  assert.deepEqual(disabledHeaders, { "Anthropic-Beta": "existing-beta" });
+  const payload = { model: "claude-opus-4-8", messages: [], betas: ["existing-beta"] };
+  assert.equal(await beforeRequest({ payload }, context.ctx), undefined);
 
   await command.handler("", context.ctx);
-  const activeHeaders = {
-    "Anthropic-Beta": "existing-beta",
-    "anthropic-beta": `second-beta,${ANTHROPIC_FAST_BETA}`,
-  };
-  await beforeHeaders({ headers: activeHeaders }, context.ctx);
-  assert.deepEqual(betaValues(activeHeaders), [
-    "existing-beta",
-    "second-beta",
+  assert.deepEqual(await beforeRequest({ payload }, context.ctx), {
+    ...payload,
+    betas: ["existing-beta", ANTHROPIC_FAST_BETA],
+    speed: "fast",
+  });
+  assert.deepEqual(payload.betas, ["existing-beta"]);
+
+  const alreadyHasBeta = { model: "claude-opus-4-8", messages: [], betas: [ANTHROPIC_FAST_BETA] };
+  assert.deepEqual((await beforeRequest({ payload: alreadyHasBeta }, context.ctx)).betas, [
     ANTHROPIC_FAST_BETA,
   ]);
 
   context.ctx.model = { provider: "anthropic", api: "anthropic-messages", id: "claude-sonnet-4-5" };
-  const unsupportedHeaders = { "anthropic-beta": "keep-me" };
-  await beforeHeaders({ headers: unsupportedHeaders }, context.ctx);
-  assert.deepEqual(unsupportedHeaders, { "anthropic-beta": "keep-me" });
+  assert.equal(
+    await beforeRequest(
+      { payload: { model: "claude-sonnet-4-5", messages: [], betas: ["keep-me"] } },
+      context.ctx,
+    ),
+    undefined,
+  );
 });
 
-test("fast preserves required Anthropic provider betas in final API-key and OAuth wire headers", async (t) => {
+test("fast preserves every Pi-computed Anthropic beta in the final API-key and OAuth wire headers", async (t) => {
   const { agentDir, projectDir } = setupTempDirs(t);
   setAgentDir(t, agentDir);
   const extension = await loadExtension("extensions/fast/index.ts");
   const harness = createExtensionHarness();
-  harness.pi.getActiveTools = () => ["read"];
   extension(harness.pi);
   const sessionStart = getHandler(harness, "session_start");
-  const beforeHeaders = getHandler(harness, "before_provider_headers");
+  const beforeRequest = getHandler(harness, "before_provider_request");
   const command = getCommand(harness);
 
-  async function captureWireHeaders({ oauth, compat, modelHeaders }) {
+  async function captureWire({ oauth, compat, modelHeaders }) {
     const authToken = oauth ? "sk-ant-oat-wire-test" : "sk-ant-api-wire-test";
     const model = {
       provider: "anthropic",
       api: "anthropic-messages",
-      id: "claude-opus-4-8",
-      name: "Claude Opus 4.8 test",
+      id: "claude-opus-5-5",
+      name: "Claude Opus 5.5 test",
       baseUrl: "https://anthropic-wire-test.invalid",
       reasoning: true,
       input: ["text"],
@@ -984,9 +997,7 @@ test("fast preserves required Anthropic provider betas in final API-key and OAut
     await sessionStart({}, context.ctx);
     await command.handler("", context.ctx);
 
-    const requestHeaders = { "Anthropic-Beta": "existing-beta" };
-    await beforeHeaders({ headers: requestHeaders }, context.ctx);
-    let captured;
+    const request = {};
     const stream = streamAnthropicSimple(
       model,
       {
@@ -1000,9 +1011,11 @@ test("fast preserves required Anthropic provider betas in final API-key and OAut
       },
       {
         apiKey: authToken,
-        headers: requestHeaders,
+        reasoning: "medium",
+        onPayload: (payload) => beforeRequest({ payload }, context.ctx),
         fetch: async (_input, init) => {
-          captured = Object.fromEntries(new Headers(init?.headers));
+          request.headers = Object.fromEntries(new Headers(init?.headers));
+          request.body = JSON.parse(String(init?.body));
           return new Response(JSON.stringify({ error: { message: "wire capture complete" } }), {
             status: 400,
             headers: { "content-type": "application/json" },
@@ -1011,34 +1024,43 @@ test("fast preserves required Anthropic provider betas in final API-key and OAut
       },
     );
     await stream.result();
-    assert.ok(captured, "expected Anthropic request to reach the fake fetch");
-    return captured;
+    assert.ok(request.headers, "expected Anthropic request to reach the fake fetch");
+    return request;
   }
 
-  const apiKeyHeaders = await captureWireHeaders({
+  // Regression: a Fast header rewrite dropped Pi's mid-conversation-output-config beta, so
+  // Anthropic rejected the per-message `output_config` with a 400 on Opus 5/5.5.
+  const midConvo = await captureWire({
     oauth: false,
-    compat: { forceAdaptiveThinking: false, supportsEagerToolInputStreaming: false },
-    modelHeaders: { "Anthropic-Beta": "model-custom-beta" },
+    compat: { supportsMidConvoEffort: true, forceAdaptiveThinking: true },
+    modelHeaders: undefined,
   });
-  assert.deepEqual(betaValues(apiKeyHeaders), [
-    "model-custom-beta",
-    "existing-beta",
-    "fine-grained-tool-streaming-2025-05-14",
-    "interleaved-thinking-2025-05-14",
-    ANTHROPIC_FAST_BETA,
-  ]);
+  assert.equal(midConvo.body.speed, "fast");
+  assert.ok(
+    midConvo.body.messages.some((message) => message.output_config !== undefined),
+    "expected per-message output_config",
+  );
+  const midConvoBetas = betaValues(midConvo.headers);
+  assert.ok(midConvoBetas.includes("mid-conversation-output-config-2026-07-01"));
+  assert.ok(midConvoBetas.includes("thinking-binding-controls-2026-08-01"));
+  assert.ok(midConvoBetas.includes(ANTHROPIC_FAST_BETA));
 
-  const oauthHeaders = await captureWireHeaders({
+  const oauth = await captureWire({
     oauth: true,
     compat: { forceAdaptiveThinking: true, supportsEagerToolInputStreaming: true },
     modelHeaders: undefined,
   });
-  assert.deepEqual(betaValues(oauthHeaders), [
-    "existing-beta",
-    "claude-code-20250219",
-    "oauth-2025-04-20",
-    ANTHROPIC_FAST_BETA,
-  ]);
+  const oauthBetas = betaValues(oauth.headers);
+  assert.ok(oauthBetas.includes("claude-code-20250219"));
+  assert.ok(oauthBetas.includes("oauth-2025-04-20"));
+  assert.ok(oauthBetas.includes(ANTHROPIC_FAST_BETA));
+
+  const customHeader = await captureWire({
+    oauth: false,
+    compat: { forceAdaptiveThinking: false, supportsEagerToolInputStreaming: false },
+    modelHeaders: { "Anthropic-Beta": "model-custom-beta" },
+  });
+  assert.deepEqual(betaValues(customHeader.headers), ["model-custom-beta", ANTHROPIC_FAST_BETA]);
 });
 
 test("fast treats removed models gpt-5.4, claude-opus-4-6, and claude-opus-4-7 as ineligible", async (t) => {
