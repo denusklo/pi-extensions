@@ -34,7 +34,7 @@ For eligible Anthropic Claude models it injects:
 }
 ```
 
-It also appends the required beta `fast-mode-2026-02-01` to the request's `betas` list, which Pi sends as the `anthropic-beta` header. The extension does not set the `anthropic-beta` header itself: Pi treats an explicit header as the complete beta list, so rewriting it would drop betas Pi computes from the model (for example `mid-conversation-output-config-2026-07-01` on Claude Opus 5/5.5, which made Anthropic reject per-message `output_config` with a 400).
+It also appends the required beta `fast-mode-2026-02-01` to the request's `betas` list, which Pi sends as the `anthropic-beta` header. The extension does not set the `anthropic-beta` header itself, so Pi's own betas are kept.
 
 ## Eligibility
 

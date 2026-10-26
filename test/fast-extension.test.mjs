@@ -48,7 +48,7 @@ function writeConfig(filePath, config) {
   writeFileSync(filePath, `${JSON.stringify(config, null, 2)}\n`);
 }
 
-function createContext({ cwd, model, trusted = true, hasUI = true, oauth = false, authToken }) {
+function createContext({ cwd, model, trusted = true, hasUI = true, oauth = false }) {
   const statuses = [];
   const notifications = [];
   const oauthCalls = [];
@@ -73,10 +73,6 @@ function createContext({ cwd, model, trusted = true, hasUI = true, oauth = false
       isUsingOAuth(currentModel) {
         oauthCalls.push(currentModel);
         return oauth;
-      },
-      async getProviderAuth() {
-        const apiKey = authToken ?? (oauth ? "sk-ant-oat-test" : "sk-ant-api-test");
-        return { auth: { apiKey } };
       },
     },
   };
@@ -869,6 +865,11 @@ test("fast never overwrites provider fields or mutates malformed and mismatched 
   const speedPayload = { model: "claude-opus-4-8", speed: "standard" };
   assert.equal(await beforeRequest({ payload: speedPayload }, context.ctx), undefined);
   assert.deepEqual(speedPayload, { model: "claude-opus-4-8", speed: "standard" });
+  for (const betas of ["context-1m-2025-08-07", null]) {
+    const betasPayload = { model: "claude-opus-4-8", betas };
+    assert.equal(await beforeRequest({ payload: betasPayload }, context.ctx), undefined);
+    assert.deepEqual(betasPayload, { model: "claude-opus-4-8", betas });
+  }
 
   context.ctx.model = { provider: "openai-codex", api: "openai-codex-responses", id: "gpt-5.5" };
   context.ctx.modelRegistry.isUsingOAuth = () => true;
@@ -967,7 +968,7 @@ test("fast only adds the Anthropic beta to the payload while active and keeps ex
   );
 });
 
-test("fast preserves every Pi-computed Anthropic beta in the final API-key and OAuth wire headers", async (t) => {
+test("fast preserves mid-conversation, thinking-binding, server-side fallback, OAuth and custom-header betas in final wire headers", async (t) => {
   const { agentDir, projectDir } = setupTempDirs(t);
   setAgentDir(t, agentDir);
   const extension = await loadExtension("extensions/fast/index.ts");
@@ -993,7 +994,7 @@ test("fast preserves every Pi-computed Anthropic beta in the final API-key and O
       compat,
       headers: modelHeaders,
     };
-    const context = createContext({ cwd: projectDir, model, oauth, authToken });
+    const context = createContext({ cwd: projectDir, model, oauth });
     await sessionStart({}, context.ctx);
     await command.handler("", context.ctx);
 
@@ -1032,7 +1033,11 @@ test("fast preserves every Pi-computed Anthropic beta in the final API-key and O
   // Anthropic rejected the per-message `output_config` with a 400 on Opus 5/5.5.
   const midConvo = await captureWire({
     oauth: false,
-    compat: { supportsMidConvoEffort: true, forceAdaptiveThinking: true },
+    compat: {
+      supportsMidConvoEffort: true,
+      forceAdaptiveThinking: true,
+      allowedFallbackModels: [{ provider: "anthropic", model: "claude-sonnet-4-5" }],
+    },
     modelHeaders: undefined,
   });
   assert.equal(midConvo.body.speed, "fast");
@@ -1043,6 +1048,7 @@ test("fast preserves every Pi-computed Anthropic beta in the final API-key and O
   const midConvoBetas = betaValues(midConvo.headers);
   assert.ok(midConvoBetas.includes("mid-conversation-output-config-2026-07-01"));
   assert.ok(midConvoBetas.includes("thinking-binding-controls-2026-08-01"));
+  assert.ok(midConvoBetas.includes("server-side-fallback-2026-07-01"));
   assert.ok(midConvoBetas.includes(ANTHROPIC_FAST_BETA));
 
   const oauth = await captureWire({

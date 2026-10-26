@@ -368,8 +368,8 @@ function getStatusMessage(ctx: ExtensionContext, state: SessionState): string {
  * the complete list, so setting that header here would drop any beta this
  * extension does not know about.
  */
-function withAnthropicFastBeta(payload: PayloadRecord): unknown[] {
-  const existing = Array.isArray(payload.betas) ? payload.betas : [];
+function withAnthropicFastBeta(betas: unknown[] | undefined): unknown[] {
+  const existing = betas ?? [];
   return existing.includes(ANTHROPIC_FAST_BETA) ? existing : [...existing, ANTHROPIC_FAST_BETA];
 }
 
@@ -403,9 +403,10 @@ function injectFastPayload(
 
   if (eligibility.provider === "anthropic") {
     if ("speed" in payload) return undefined;
+    if (payload.betas !== undefined && !Array.isArray(payload.betas)) return undefined;
     state.lastInjectedAt = Date.now();
     state.lastInjectedModel = eligibility.modelKey;
-    return { ...payload, speed: ANTHROPIC_FAST_SPEED, betas: withAnthropicFastBeta(payload) };
+    return { ...payload, speed: ANTHROPIC_FAST_SPEED, betas: withAnthropicFastBeta(payload.betas) };
   }
 
   if ("service_tier" in payload) return undefined;
